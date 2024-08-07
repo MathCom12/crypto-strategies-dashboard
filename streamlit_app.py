@@ -1,151 +1,116 @@
 import streamlit as st
+import numpy as np
 import pandas as pd
-import math
-from pathlib import Path
+import mplfinance as mpf
+import matplotlib.pyplot as plt
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Streamlit 페이지 구성
+st.title("캔들차트 예측 게임")
+st.write("평균(mean)과 표준편차(std)를 입력하여 랜덤 수익률을 생성하고, 이를 통해 가격 데이터를 생성하여 캔들차트를 시각화합니다.")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# 사용자 입력
+mean = st.number_input("평균 수익률 (mean)", value=0.0, step=0.001, format="%.3f")
+std = st.number_input("표준편차 (std)", value=0.01, step=0.001, format="%.3f")
+days = st.number_input("기간 (days)", value=20, min_value=5, max_value=365, step=1)
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# 랜덤 수익률 생성
+def generate_random_returns(mean, std, periods):
+    """mean과 std를 기반으로 랜덤 수익률 생성"""
+    returns = np.random.normal(loc=mean, scale=std, size=periods)
+    return returns
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# 수익률을 이용해 가격 생성
+def generate_prices_from_returns(initial_price, returns):
+    """수익률로부터 가격을 계산"""
+    prices = [initial_price]
+    for r in returns:
+        new_price = prices[-1] * (1 + r)
+        prices.append(new_price)
+    return np.array(prices)
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# 초기 가격 설정
+initial_price = 100.0
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
+# 세션 상태를 사용하여 데이터 보존
+if 'ohlc_df' not in st.session_state or 'correct_answer' not in st.session_state or st.session_state.get('new_problem', False):
+    # 새로운 데이터를 생성하여 세션 상태에 저장
+    returns = generate_random_returns(mean, std, days * 10)
+    prices = generate_prices_from_returns(initial_price, returns)
+    
+    # 가격 데이터 프레임 생성
+    dates = pd.date_range(end=pd.Timestamp.today(), periods=days)
+    ohlc_data = []
 
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
+    # OHLC 데이터 생성
+    for i in range(days):
+        period_prices = prices[i*10:(i+1)*10]  # 각 기간의 10개 가격 데이터
+        open_price = period_prices[0]
+        high_price = np.max(period_prices)
+        low_price = np.min(period_prices)
+        close_price = period_prices[-1]
+        ohlc_data.append([open_price, high_price, low_price, close_price])
 
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
+    # 데이터프레임으로 변환하여 세션 상태에 저장
+    ohlc_df = pd.DataFrame(ohlc_data, columns=['Open', 'High', 'Low', 'Close'], index=dates)
+    st.session_state['ohlc_df'] = ohlc_df
 
-    return gdp_df
+    # 정답 생성
+    price_diff = ohlc_df['Close'].iloc[-1] - ohlc_df['Close'].iloc[-2]
+    if price_diff > 0:
+        st.session_state['correct_answer'] = '상승'
+    elif price_diff < 0:
+        st.session_state['correct_answer'] = '하락'
+    else:
+        st.session_state['correct_answer'] = '변동 없음'
+    
+    # 새로운 문제가 생성되었으므로 False로 설정
+    st.session_state['new_problem'] = False
 
-gdp_df = get_gdp_data()
+# 세션 상태에서 데이터 가져오기
+ohlc_df = st.session_state['ohlc_df']
+correct_answer = st.session_state['correct_answer']
 
-# -----------------------------------------------------------------------------
-# Draw the actual page
+# 마지막 바를 숨기기 위한 조작
+hidden_data = ohlc_df[:-1]  # 마지막 바를 숨김
+visible_data = ohlc_df  # 전체 데이터
 
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
+# 캔들차트 그리기 (마지막 바는 ?로 표시)
+st.subheader("랜덤 캔들차트 (마지막 바는 예측을 위해 숨겨짐)")
 
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
+fig, ax = plt.subplots()
+mpf.plot(hidden_data, type='candle', style='charles', volume=False, ax=ax)
 
-# Add some spacing
-''
-''
+# 마지막 바를 물음표로 표시
+last_date = ohlc_df.index[-1]
+ax.annotate('?', xy=(last_date, ohlc_df['Close'].iloc[-2]), xytext=(last_date, ohlc_df['Close'].iloc[-2] + 5),
+            fontsize=15, color='red', ha='center')
 
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
+st.pyplot(fig)
 
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
+# 다음 캔들 예측
+st.subheader("다음 캔들 예측")
+choices = ['상승', '하락', '변동 없음']
+prediction = st.radio("다음 캔들의 변화를 예측하세요:", choices)
 
-countries = gdp_df['Country Code'].unique()
+# 예측 결과 확인 버튼 클릭 시 동작
+if st.button("예측 결과 확인"):
+    st.write(f"정답: {correct_answer}")
 
-if not len(countries):
-    st.warning("Select at least one country")
+    # 전체 데이터로 차트 업데이트
+    fig, ax = plt.subplots()
+    mpf.plot(visible_data, type='candle', style='charles', volume=False, ax=ax)
+    st.pyplot(fig)
 
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
+    # 예측 결과 확인
+    if prediction == correct_answer:
+        st.success("정답입니다!")
+    else:
+        st.error("오답입니다. 다시 시도해보세요.")
+    
+    # 예측 결과 확인 후에 "다음 문제" 버튼 표시
+    if st.button("다음 문제"):
+        # 세션 상태를 갱신하여 새로운 문제를 생성하도록 설정
+        st.session_state['new_problem'] = True
+        # 리로드하여 새로운 문제 생성
+        st.experimental_rerun()
 
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[gdp_df['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
